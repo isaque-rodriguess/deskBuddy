@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Desktop Pet Zero — animated mascot overlay"
 authors = ["deskBuddy"]
 edition = "2021"
+default-run = "deskbuddy"
 
 [lib]
 name = "deskbuddy_lib"
