@@ -1,5 +1,11 @@
-// deskBuddy — Desktop Pet Zero (Tauri 2 + SvelteKit)
-// Fase 0: scaffold mínimo. Plugins e comandos entram nas próximas fases.
+// Fase 1: pure ports. Not wired into Tauri commands yet (Fase 2/3).
+// Allow dead code until the UI layers consume these modules.
+#![allow(dead_code)]
+
+pub mod config;
+pub mod pet;
+pub mod petdex;
+pub mod sprite;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
