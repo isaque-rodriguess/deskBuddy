@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"
 rand = "0.8"
 image = { version = "0.25", default-features = false, features = ["webp", "png"] }
 reqwest = { version = "0.12", features = ["blocking", "json"] }
+base64 = "0.22"
 
 [dev-dependencies]
 httpmock = "0.7"
