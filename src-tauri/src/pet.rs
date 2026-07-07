@@ -61,7 +61,7 @@ impl PetState {
             PetState::Idle => "idle",
             PetState::RunRight => "run_right",
             PetState::RunLeft => "run_left",
-            PetState::Wave => "wave",
+            PetState::Wave => "waving",
             PetState::Jump => "jump",
             PetState::Failed => "failed",
             PetState::Waiting => "waiting",
@@ -97,6 +97,7 @@ pub struct Pet {
     pub state: PetState,
     pub mirror: bool,
     pub anim_idx: usize,
+    pub anim_last: f64,
     pub run_enabled: bool,
     pub dragging: bool,
     pub last_tick: f64,
@@ -122,6 +123,7 @@ impl Pet {
             state: PetState::Idle,
             mirror: false,
             anim_idx: 0,
+            anim_last: now,
             run_enabled,
             dragging: false,
             last_tick: now,
@@ -268,6 +270,37 @@ impl Pet {
             mirror: self.mirror,
             phase: self.phase,
         }
+    }
+
+    pub fn advance_anim(&mut self, now: f64, frame_count: usize) {
+        if frame_count == 0 {
+            return;
+        }
+        let speed = anim_speed(self.state.as_str());
+        let frame_ms = (LOOP_MS_F / frame_count as f64) * speed;
+        if now - self.anim_last >= frame_ms / 1000.0 {
+            self.anim_idx = (self.anim_idx + 1) % frame_count;
+            self.anim_last = now;
+        }
+    }
+
+    pub fn reset_anim(&mut self, now: f64) {
+        self.anim_idx = 0;
+        self.anim_last = now;
+    }
+}
+
+pub fn sprite_row(state: PetState) -> &'static str {
+    match state {
+        PetState::Idle => "idle",
+        PetState::RunRight => "running-right",
+        PetState::RunLeft => "running-left",
+        PetState::Wave => "idle",
+        PetState::Jump => "jumping",
+        PetState::Failed => "failed",
+        PetState::Waiting => "waiting",
+        PetState::Review => "review",
+        PetState::Running => "running",
     }
 }
 
