@@ -143,6 +143,7 @@ pub struct AppState {
     hermes_dir: PathBuf,
     app_data_dir: PathBuf,
     resource_dir: PathBuf,
+    autostart_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 // ── Overlay commands ──────────────────────────────────────
@@ -447,6 +448,7 @@ pub fn run() {
                 hermes_dir,
                 app_data_dir,
                 resource_dir,
+                autostart_item: Mutex::new(None),
             };
             app.manage(app_state);
 
@@ -489,10 +491,27 @@ pub fn run() {
 
             // Tray
             let show_i = MenuItem::with_id(app, "show", "Settings", true, None::<&str>)?;
-            let autostart_i =
-                MenuItem::with_id(app, "autostart", "Toggle autostart", true, None::<&str>)?;
+            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+            let autostart_i = MenuItem::with_id(
+                app,
+                "autostart",
+                if autostart_enabled {
+                    "✓ Start with Windows"
+                } else {
+                    "Start with Windows"
+                },
+                true,
+                None::<&str>,
+            )?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &autostart_i, &quit_i])?;
+
+            // Store autostart menu item handle for text updates on toggle
+            {
+                let state = app.state::<AppState>();
+                *state.autostart_item.lock().unwrap() = Some(autostart_i);
+            }
+
             let _tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .tooltip("Desktop Pet")
@@ -512,6 +531,15 @@ pub fn run() {
                         } else {
                             mgr.disable()
                         };
+                        let state = app.state::<AppState>();
+                        let guard = state.autostart_item.lock().unwrap();
+                        if let Some(item) = guard.as_ref() {
+                            let _ = item.set_text(if new_state {
+                                "✓ Start with Windows"
+                            } else {
+                                "Start with Windows"
+                            });
+                        }
                     }
                     "quit" => app.exit(0),
                     _ => {}
