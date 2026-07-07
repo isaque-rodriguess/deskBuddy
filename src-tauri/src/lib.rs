@@ -171,6 +171,7 @@ pub fn run() {
             overlay
                 .set_size(PhysicalSize::new(fw as u32, fh as u32))
                 .ok();
+            let _ = overlay.set_shadow(false);
 
             let now = now_secs();
             let config = PetConfig::default();
