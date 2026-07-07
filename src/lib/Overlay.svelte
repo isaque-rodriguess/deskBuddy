@@ -7,8 +7,8 @@
   type FrameData = Record<string, FrameSet>;
   type FrameCache = Record<string, { normal: HTMLImageElement[]; mirror: HTMLImageElement[] }>;
 
-  const FW = 134;
-  const FH = 146;
+  let FW = 134;
+  let FH = 146;
 
   let canvas: HTMLCanvasElement;
   let ctx: CanvasRenderingContext2D | null = null;
@@ -65,6 +65,18 @@
     }>("pet-frame", (e) => {
       lastPos = { x: e.payload.pos_x, y: e.payload.pos_y };
       draw(e.payload.row, e.payload.frame_idx, e.payload.mirror);
+    });
+
+    await listen<{ fw: number; fh: number }>("sprites-reloaded", async (e) => {
+      FW = e.payload.fw;
+      FH = e.payload.fh;
+      if (canvas) {
+        canvas.width = FW;
+        canvas.height = FH;
+      }
+      const data = await invoke<FrameData>("get_frames");
+      frames = await preload(data);
+      draw("idle", 0, false);
     });
   });
 

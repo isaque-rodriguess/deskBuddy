@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use base64::Engine;
 use image::RgbaImage;
 use rand::SeedableRng;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, State};
@@ -268,50 +268,50 @@ fn delete_pet_cmd(slug: String, state: State<'_, AppState>) -> Result<(), String
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct ApplyConfigArgs {
+#[tauri::command]
+#[allow(clippy::explicit_auto_deref)]
+fn apply_config(
     slug: String,
     scale: f64,
     enabled: bool,
     run_enabled: bool,
-}
-
-#[tauri::command]
-#[allow(clippy::explicit_auto_deref)]
-fn apply_config(
-    args: ApplyConfigArgs,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let new_cfg = PetConfig {
-        slug: args.slug.clone(),
-        scale: args.scale,
-        enabled: args.enabled,
-        run_enabled: args.run_enabled,
+        slug: slug.clone(),
+        scale,
+        enabled,
+        run_enabled,
     };
     new_cfg
         .save(&state.config_path)
         .map_err(|e| e.to_string())?;
 
-    let scale_changed = (state.config.lock().unwrap().scale - args.scale).abs() > 1e-9;
-    let slug_changed = state.config.lock().unwrap().slug != args.slug;
+    let old_cfg = state.config.lock().unwrap().clone();
+    let scale_changed = (old_cfg.scale - scale).abs() > 1e-9;
+    let slug_changed = old_cfg.slug != slug;
     *state.config.lock().unwrap() = new_cfg;
 
     if slug_changed || scale_changed {
         if let Some(sheet) = find_spritesheet(
-            &args.slug,
+            &slug,
             &state.hermes_dir,
             &state.app_data_dir,
             &state.resource_dir,
         ) {
-            let scale_f32 = args.scale as f32;
+            let scale_f32 = scale as f32;
             if let Ok(new_cache) = load_sprite_cache(&sheet, scale_f32) {
                 *state.sprites.write().unwrap() = new_cache;
             }
-            let (fw, fh) = sprite::get_frame_size(args.scale as f32);
+            let (fw, fh) = sprite::get_frame_size(scale as f32);
             let (fw, fh) = (fw as f64, fh as f64);
             if let Some(overlay) = app.get_webview_window("overlay") {
                 let _ = overlay.set_size(PhysicalSize::new(fw as u32, fh as u32));
+                let _ = overlay.emit(
+                    "sprites-reloaded",
+                    &serde_json::json!({ "fw": fw, "fh": fh }),
+                );
             }
             let mut rt = state.runtime.lock().unwrap();
             let rt: &mut PetRuntime = &mut *rt;
@@ -330,7 +330,7 @@ fn apply_config(
     {
         let mut rt = state.runtime.lock().unwrap();
         let rt: &mut PetRuntime = &mut *rt;
-        rt.pet.run_enabled = args.run_enabled;
+        rt.pet.run_enabled = run_enabled;
     }
     Ok(())
 }

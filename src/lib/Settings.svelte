@@ -198,12 +198,10 @@
     isApplying = true;
     try {
       await invoke("apply_config", {
-        args: {
-          slug: selectedSlug,
-          scale: scalePct / 100,
-          enabled,
-          run_enabled: runEnabled,
-        },
+        slug: selectedSlug,
+        scale: scalePct / 100,
+        enabled,
+        runEnabled: runEnabled,
       });
       activeSlug = selectedSlug;
       gridStatus = "✓ Applied!";
@@ -340,7 +338,7 @@
   >
     <!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
     <div
-      style="background: {C_BG}; border: 1px solid {C_BORDER}; border-radius: 8px; padding: 24px; text-align: center; min-width: 240px;"
+      style="background: {C_CARD}; border: 1px solid {C_ACCENT}; border-radius: 8px; padding: 24px; text-align: center; min-width: 240px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);"
       onclick={(e) => e.stopPropagation()}
     >
       <p style="font-size: 11px; font-weight: bold; margin: 0 0 16px;">Delete {deleteTarget?.name}?</p>
