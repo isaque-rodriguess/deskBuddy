@@ -341,7 +341,7 @@
       style="background: {C_CARD}; border: 1px solid {C_ACCENT}; border-radius: 8px; padding: 24px; text-align: center; min-width: 240px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);"
       onclick={(e) => e.stopPropagation()}
     >
-      <p style="font-size: 11px; font-weight: bold; margin: 0 0 16px;">Delete {deleteTarget?.name}?</p>
+      <p style="font-size: 11px; font-weight: bold; margin: 0 0 16px; color: {C_TEXT};">Delete {deleteTarget?.name}?</p>
       <div style="display: flex; gap: 6px; justify-content: center;">
         <button
           onclick={cancelDelete}
