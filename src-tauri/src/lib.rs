@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -21,7 +22,7 @@ pub mod pet;
 pub mod petdex;
 pub mod sprite;
 
-const SCALE: f64 = 0.7;
+const DEFAULT_SCALE: f64 = 0.7;
 const TICK_MS: u64 = 16;
 
 #[derive(Serialize, Clone)]
@@ -52,7 +53,7 @@ fn encode_data_url(img: &RgbaImage) -> String {
 }
 
 fn load_sprite_cache(
-    sheet_path: &std::path::Path,
+    sheet_path: &Path,
     scale: f32,
 ) -> Result<SpriteCache, Box<dyn std::error::Error>> {
     let sheet = image::open(sheet_path)?.to_rgba8();
@@ -98,9 +99,56 @@ struct PetFrameEvent {
     pos_y: f64,
 }
 
+#[derive(Serialize, Clone)]
+struct PetInfo {
+    slug: String,
+    name: String,
+    source: String,
+    downloaded: bool,
+}
+
+fn hermes_pets_dir() -> PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(|p| PathBuf::from(p).join("hermes").join("pets"))
+        .unwrap_or_else(|_| PathBuf::from(".").join("hermes").join("pets"))
+}
+
+fn find_spritesheet(
+    slug: &str,
+    hermes_dir: &Path,
+    app_data: &Path,
+    resource_dir: &Path,
+) -> Option<PathBuf> {
+    let candidates = [
+        hermes_dir.join(slug).join("spritesheet.webp"),
+        app_data
+            .join("petdex_cache")
+            .join(slug)
+            .join("spritesheet.webp"),
+        resource_dir
+            .join("resources")
+            .join(slug)
+            .join("spritesheet.webp"),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
+pub struct AppState {
+    sprites: Arc<RwLock<SpriteCache>>,
+    runtime: Mutex<PetRuntime>,
+    avatar_cache: Mutex<HashMap<String, String>>,
+    config: Mutex<PetConfig>,
+    config_path: PathBuf,
+    hermes_dir: PathBuf,
+    app_data_dir: PathBuf,
+    resource_dir: PathBuf,
+}
+
+// ── Overlay commands ──────────────────────────────────────
+
 #[tauri::command]
 fn get_frames(state: State<'_, AppState>) -> HashMap<String, FrameSet> {
-    state.sprites.frames.clone()
+    state.sprites.read().unwrap().frames.clone()
 }
 
 #[tauri::command]
@@ -128,9 +176,168 @@ fn show_settings(app: tauri::AppHandle) {
     }
 }
 
-pub struct AppState {
-    sprites: Arc<SpriteCache>,
-    runtime: Mutex<PetRuntime>,
+// ── Settings commands ─────────────────────────────────────
+
+#[tauri::command]
+fn list_local_pets(state: State<'_, AppState>) -> Vec<PetInfo> {
+    petdex::get_installed_pets(&state.hermes_dir, &state.app_data_dir)
+        .into_iter()
+        .map(|p| PetInfo {
+            slug: p.slug,
+            name: p.display_name,
+            source: p.source.unwrap_or_else(|| "local".into()),
+            downloaded: true,
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn list_all_pets(state: State<'_, AppState>) -> Vec<PetInfo> {
+    let local = petdex::get_installed_pets(&state.hermes_dir, &state.app_data_dir);
+    let mut seen: std::collections::HashSet<String> =
+        local.iter().map(|p| p.slug.clone()).collect();
+    let mut out: Vec<PetInfo> = local
+        .into_iter()
+        .map(|p| PetInfo {
+            slug: p.slug,
+            name: p.display_name,
+            source: p.source.unwrap_or_else(|| "local".into()),
+            downloaded: true,
+        })
+        .collect();
+    let manifest = petdex::fetch_manifest(&state.app_data_dir, false);
+    for p in manifest {
+        if seen.insert(p.slug.clone()) {
+            out.push(PetInfo {
+                slug: p.slug,
+                name: p.display_name,
+                source: "petdex".into(),
+                downloaded: false,
+            });
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn get_avatar(slug: String, state: State<'_, AppState>) -> Option<String> {
+    {
+        let cache = state.avatar_cache.lock().unwrap();
+        if let Some(url) = cache.get(&slug) {
+            return Some(url.clone());
+        }
+    }
+    let sheet = find_spritesheet(
+        &slug,
+        &state.hermes_dir,
+        &state.app_data_dir,
+        &state.resource_dir,
+    )?;
+    let frames = sprite::load_frames("idle", 0.25, &sheet).ok()?;
+    if frames.is_empty() {
+        return None;
+    }
+    let url = encode_data_url(&frames[0]);
+    state.avatar_cache.lock().unwrap().insert(slug, url.clone());
+    Some(url)
+}
+
+#[tauri::command]
+fn download_pet_cmd(slug: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let manifest = petdex::fetch_manifest(&state.app_data_dir, false);
+    let info = manifest
+        .into_iter()
+        .find(|p| p.slug == slug)
+        .ok_or_else(|| format!("pet {slug} not in manifest"))?;
+    let (_, ok) = petdex::download_pet(&state.app_data_dir, &info).map_err(|e| e.to_string())?;
+    Ok(ok)
+}
+
+#[tauri::command]
+fn delete_pet_cmd(slug: String, state: State<'_, AppState>) -> Result<(), String> {
+    let paths = [
+        state.app_data_dir.join("petdex_cache").join(&slug),
+        state.hermes_dir.join(&slug),
+    ];
+    for p in paths {
+        if p.exists() {
+            std::fs::remove_dir_all(&p).map_err(|e| e.to_string())?;
+        }
+    }
+    state.avatar_cache.lock().unwrap().remove(&slug);
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::explicit_auto_deref)]
+fn apply_config(
+    slug: String,
+    scale: f64,
+    enabled: bool,
+    run_enabled: bool,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let new_cfg = PetConfig {
+        slug: slug.clone(),
+        scale,
+        enabled,
+        run_enabled,
+    };
+    new_cfg
+        .save(&state.config_path)
+        .map_err(|e| e.to_string())?;
+
+    let old_cfg = state.config.lock().unwrap().clone();
+    let scale_changed = (old_cfg.scale - scale).abs() > 1e-9;
+    let slug_changed = old_cfg.slug != slug;
+    *state.config.lock().unwrap() = new_cfg;
+
+    if slug_changed || scale_changed {
+        if let Some(sheet) = find_spritesheet(
+            &slug,
+            &state.hermes_dir,
+            &state.app_data_dir,
+            &state.resource_dir,
+        ) {
+            let scale_f32 = scale as f32;
+            if let Ok(new_cache) = load_sprite_cache(&sheet, scale_f32) {
+                *state.sprites.write().unwrap() = new_cache;
+            }
+            let (fw, fh) = sprite::get_frame_size(scale as f32);
+            let (fw, fh) = (fw as f64, fh as f64);
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                let _ = overlay.set_size(PhysicalSize::new(fw as u32, fh as u32));
+                let _ = overlay.emit(
+                    "sprites-reloaded",
+                    &serde_json::json!({ "fw": fw, "fh": fh }),
+                );
+            }
+            let mut rt = state.runtime.lock().unwrap();
+            let rt: &mut PetRuntime = &mut *rt;
+            rt.pet.fw = fw;
+            rt.pet.fh = fh;
+            rt.pet.recompute_ground();
+            rt.pet.pos_y = rt.pet.ground_y;
+            rt.pet.pos_x = 80.0;
+            rt.pet.phase = crate::pet::Phase::Pause;
+            rt.pet.pause_until = now_secs() + 2.0;
+            rt.pet.state = crate::pet::PetState::Idle;
+            rt.pet.anim_idx = 0;
+            rt.pet.anim_last = now_secs();
+        }
+    }
+    {
+        let mut rt = state.runtime.lock().unwrap();
+        let rt: &mut PetRuntime = &mut *rt;
+        rt.pet.run_enabled = run_enabled;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_config(state: State<'_, AppState>) -> PetConfig {
+    state.config.lock().unwrap().clone()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -140,7 +347,14 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_frames,
             pet_drag,
-            show_settings
+            show_settings,
+            list_local_pets,
+            list_all_pets,
+            get_avatar,
+            download_pet_cmd,
+            delete_pet_cmd,
+            apply_config,
+            get_config,
         ])
         .setup(|app| {
             let resource_path = app
@@ -150,7 +364,7 @@ pub fn run() {
                     tauri::path::BaseDirectory::Resource,
                 )
                 .or_else(|_| {
-                    let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                         .join("resources/zero-2/spritesheet.webp");
                     if p.exists() {
                         Ok(p)
@@ -159,14 +373,21 @@ pub fn run() {
                     }
                 })?;
 
-            let scale_f32 = SCALE as f32;
-            let sprites =
-                Arc::new(load_sprite_cache(&resource_path, scale_f32).expect("load sprites"));
+            let resource_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let app_data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&app_data_dir).ok();
+            let hermes_dir = hermes_pets_dir();
+            let config_path = app_data_dir.join("pet_config.json");
+
+            let scale_f32 = DEFAULT_SCALE as f32;
+            let sprites = Arc::new(RwLock::new(
+                load_sprite_cache(&resource_path, scale_f32).expect("load sprites"),
+            ));
 
             let overlay = app.get_webview_window("overlay").expect("overlay window");
             let monitor = overlay.current_monitor()?.expect("monitor");
             let (sw, sh) = (monitor.size().width as f64, monitor.size().height as f64);
-            let (fw, fh) = sprite::get_frame_size(SCALE as f32);
+            let (fw, fh) = sprite::get_frame_size(DEFAULT_SCALE as f32);
             let (fw, fh) = (fw as f64, fh as f64);
             overlay
                 .set_size(PhysicalSize::new(fw as u32, fh as u32))
@@ -174,13 +395,22 @@ pub fn run() {
             let _ = overlay.set_shadow(false);
 
             let now = now_secs();
-            let config = PetConfig::default();
+            let mut config = PetConfig::load(&config_path);
+            if config.slug.is_empty() {
+                config = PetConfig::default();
+            }
             let pet = Pet::new(sw, sh, fw, fh, config.run_enabled, now);
             let rng = StdPetRng(rand::rngs::StdRng::seed_from_u64(42));
 
             let app_state = AppState {
                 sprites: sprites.clone(),
                 runtime: Mutex::new(PetRuntime { pet, rng }),
+                avatar_cache: Mutex::new(HashMap::new()),
+                config: Mutex::new(config),
+                config_path,
+                hermes_dir,
+                app_data_dir,
+                resource_dir,
             };
             app.manage(app_state);
 
@@ -199,7 +429,7 @@ pub fn run() {
                         let rt: &mut PetRuntime = &mut *guard;
                         rt.pet.tick(now, &mut rt.rng);
                         let row = sprite_row(rt.pet.state);
-                        let count = sprites_ref.frame_count(row);
+                        let count = sprites_ref.read().unwrap().frame_count(row);
                         rt.pet.advance_anim(now, count);
                         let frame_idx = rt.pet.anim_idx.min(count.saturating_sub(1));
                         let mirror = rt.pet.mirror;
@@ -221,7 +451,7 @@ pub fn run() {
                 }
             });
 
-            // Tray (minimal for Fase 2 — full lifecycle in Fase 4)
+            // Tray (minimal — full lifecycle in Fase 4)
             let show_i = MenuItem::with_id(app, "show", "Settings", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
