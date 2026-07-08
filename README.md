@@ -1,77 +1,66 @@
-# Desktop Pet Zero
+# deskBuddy
 
-Um pet de desktop animado que anda pela sua tela com animacoes fluidas. Escolha entre **3300+ pets** do [Petdex](https://petdex.dev) ou use os pets instalados do Hermes.
+Desktop pet mascot — animated overlay that floats over your desktop, reacts with animations, and wanders while idle. Built with Rust + Tauri 2 + SvelteKit-TS.
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)
-![Platform](https://img.shields.io/badge/Platform-Windows-0078d4?logo=windows&logoColor=white)
+## Features
 
----
+- Transparent borderless overlay with 60fps sprite animation
+- Roam AI: the pet pauses, walks, and mirrors direction naturally
+- Drag-and-drop with gravity (drop above ground → falls)
+- Settings window with petdex integration (browse 3000+ pets, download, delete)
+- Size slider, roam toggle, on/off toggle
+- System tray: Settings, autostart toggle, Quit
+- Single-instance: second launch focuses the existing window
+- Close settings → hides to tray (app keeps running)
+- Autostart on boot (Windows, Linux)
 
-## Funcionalidades
+## Prerequisites
 
-- **3300+ pets** -- baixe qualquer pet do Petdex direto pelo menu
-- **Roam** -- o pet anda pela tela automaticamente com pausas e animacoes
-- **Gravidade** -- solte o pet no ar e ele cai com animacao de jump
-- **Arrastavel** -- clique e arraste o pet pra qualquer lugar da tela
-- **Busca** -- encontre pets por nome ou slug
-- **Configuracoes** -- tamanho, ativar/desativar, roaming
-- **Dark theme** -- interface moderna e escura
-- **Tray icon** -- minimize pra bandeja do Windows
+- [Rust](https://rustup.rs) (stable, MSVC toolchain on Windows)
+- [Node.js](https://nodejs.org) LTS
+- Windows: Visual Studio Build Tools with "Desktop development with C++"
+- Linux: `libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf`
 
----
+## Development
 
-## Instalacao
-
-### Pre-requisitos
-- Python 3.11+
-- Windows 10/11
-
-### Dependencias
-```bash
-pip install Pillow pystray
+```powershell
+npm install
+npm run tauri dev
 ```
 
-### Como usar
-```bash
-git clone https://github.com/isaque-rodriguess/deskBuddy.git
-cd deskBuddy
-python pet.py
+## Build
+
+```powershell
+npm run tauri build
 ```
 
-Ou duplo-clique em `iniciar.bat`.
+Produces NSIS installer (Windows) or AppImage/deb (Linux) in `src-tauri/target/release/bundle/`.
 
----
+## Commands
 
-## Controles
+| Command | Description |
+|---|---|
+| `npm run check` | svelte-check (TS + Svelte typecheck) |
+| `npm run lint` | (eslint — add later) |
+| `cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check` | Rust formatting check |
+| `cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings` | Rust lint |
+| `cargo test --manifest-path src-tauri/Cargo.toml --all` | Rust tests |
+| `npm run tauri dev` | Dev build (opens overlay) |
+| `npm run tauri build` | Release bundle |
 
-| Acao | Como |
-|------|------|
-| **Arrastar pet** | Clique e arraste |
-| **Menu** | Botao direito no pet |
-| **Configuracoes** | Tray icon - Settings |
-| **Mostrar/Esconder** | Tray icon - Show/Hide |
-| **Sair** | Tray icon - Quit |
+## Architecture
 
----
+- `src-tauri/src/` — Rust backend (sprite parsing, petdex API, pet physics, tray, config)
+- `src/lib/` + `src/routes/` — SvelteKit frontend (Settings window, Overlay window)
+- Two Tauri windows: `settings` (hidden on boot) + `overlay` (transparent, always-on-top)
+- Window routing: both load `index.html`; `+page.svelte` switches on `getCurrentWindow().label`
+- Pet physics: Rust owns the state machine, ticks at 60fps via `tokio::interval`, emits `pet-frame` events
+- Sprites: zero-2 spritesheet bundled as Tauri resource; petdex pets cached in `app_data_dir`
 
-## Estrutura
+## Migration
 
-```
-deskBuddy/
-  pet.py              # Codigo principal
-  pet.pyw             # Versao sem console
-  petdex_api.py       # API do Petdex
-  sprite_parser.py    # Parser de sprites
-  iniciar.bat         # Atalho de inicializacao
-  make_shortcut.py    # Cria atalho na area de trabalho
-```
+This project was migrated from Python (tkinter) to Rust + Tauri 2. The legacy Python code is preserved in the `legacy-python` branch.
 
----
+## License
 
-## Tecnologias
-
-- **Python 3.11** -- linguagem principal
-- **Tkinter** -- interface grafica e janela transparente
-- **Pillow** -- manipulacao de imagens e sprites
-- **Pystray** -- icone na bandeja do Windows
-- **Petdex API** -- catalogo de 3300+ pets
+MIT
