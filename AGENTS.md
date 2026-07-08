@@ -4,7 +4,7 @@ Guidance for AI agents working in this repo.
 
 ## Project
 
-Desktop pet mascot (animated overlay + settings). Migrating from Python (tkinter) to Rust + Tauri 2 + SvelteKit-TS.
+Desktop pet mascot (animated overlay + settings). Rust + Tauri 2 + SvelteKit-TS.
 
 ## Architecture
 
@@ -40,8 +40,8 @@ npm run tauri build    # release bundle (NSIS/AppImage)
 - Rust: no comments unless asked. Follow `cargo fmt` + `clippy -D warnings`.
 - Frontend: TypeScript strict, Svelte 5 runes (`$state`, `$derived`).
 - Branches: `feat/tauri-rewrite` is the migration trunk; per-phase sub-branches (e.g. `feat/tauri-scaffold`).
-- Don't commit `src-tauri/target/`, `node_modules/`, `petdex_cache/`, `pet_config.json`.
+- Don't commit `src-tauri/target/`, `node_modules/`, `petdex_cache/`.
 
-## Migration phases (see GitHub issues #1–#8)
+## Migration status
 
-0. Scaffold (this) → 1. Pure ports → 2. Overlay MVP → 3. Settings → 4. Tray/lifecycle → 5. Release → 6. Linux
+Migration complete (Fases 0–5). Legacy Python code preserved in `legacy-python` branch.
