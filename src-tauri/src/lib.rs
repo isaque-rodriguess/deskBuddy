@@ -13,6 +13,7 @@ use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, State};
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::config::PetConfig;
 use crate::pet::{sprite_row, Pet, StdPetRng};
@@ -142,6 +143,7 @@ pub struct AppState {
     hermes_dir: PathBuf,
     app_data_dir: PathBuf,
     resource_dir: PathBuf,
+    autostart_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 // ── Overlay commands ──────────────────────────────────────
@@ -340,10 +342,43 @@ fn get_config(state: State<'_, AppState>) -> PetConfig {
     state.config.lock().unwrap().clone()
 }
 
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    let mgr = app.autolaunch();
+    if enabled {
+        mgr.enable().map_err(|e| e.to_string())
+    } else {
+        mgr.disable().map_err(|e| e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("settings") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "settings" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_frames,
             pet_drag,
@@ -355,6 +390,8 @@ pub fn run() {
             delete_pet_cmd,
             apply_config,
             get_config,
+            get_autostart,
+            set_autostart,
         ])
         .setup(|app| {
             let resource_path = app
@@ -411,6 +448,7 @@ pub fn run() {
                 hermes_dir,
                 app_data_dir,
                 resource_dir,
+                autostart_item: Mutex::new(None),
             };
             app.manage(app_state);
 
@@ -451,10 +489,29 @@ pub fn run() {
                 }
             });
 
-            // Tray (minimal — full lifecycle in Fase 4)
+            // Tray
             let show_i = MenuItem::with_id(app, "show", "Settings", true, None::<&str>)?;
+            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+            let autostart_i = MenuItem::with_id(
+                app,
+                "autostart",
+                if autostart_enabled {
+                    "✓ Start with Windows"
+                } else {
+                    "Start with Windows"
+                },
+                true,
+                None::<&str>,
+            )?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&show_i, &autostart_i, &quit_i])?;
+
+            // Store autostart menu item handle for text updates on toggle
+            {
+                let state = app.state::<AppState>();
+                *state.autostart_item.lock().unwrap() = Some(autostart_i);
+            }
+
             let _tray = TrayIconBuilder::with_id("main")
                 .menu(&menu)
                 .tooltip("Desktop Pet")
@@ -464,6 +521,24 @@ pub fn run() {
                         if let Some(w) = app.get_webview_window("settings") {
                             let _ = w.show();
                             let _ = w.set_focus();
+                        }
+                    }
+                    "autostart" => {
+                        let mgr = app.autolaunch();
+                        let new_state = !mgr.is_enabled().unwrap_or(false);
+                        let _ = if new_state {
+                            mgr.enable()
+                        } else {
+                            mgr.disable()
+                        };
+                        let state = app.state::<AppState>();
+                        let guard = state.autostart_item.lock().unwrap();
+                        if let Some(item) = guard.as_ref() {
+                            let _ = item.set_text(if new_state {
+                                "✓ Start with Windows"
+                            } else {
+                                "Start with Windows"
+                            });
                         }
                     }
                     "quit" => app.exit(0),
