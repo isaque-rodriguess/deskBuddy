@@ -16,7 +16,7 @@ use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize, State};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::config::PetConfig;
-use crate::pet::{sprite_row, Pet, StdPetRng};
+use crate::pet::{sprite_row, DesktopLayout, MonitorRect, Pet, StdPetRng};
 
 pub mod config;
 pub mod pet;
@@ -25,6 +25,53 @@ pub mod sprite;
 
 const DEFAULT_SCALE: f64 = 0.7;
 const TICK_MS: u64 = 16;
+/// Refresh display geometry every N ticks (~2s at 60fps).
+const LAYOUT_REFRESH_TICKS: u64 = 120;
+
+fn desktop_layout_from_app(app: &tauri::AppHandle) -> DesktopLayout {
+    let primary_xy: Option<(i32, i32)> = app.primary_monitor().ok().flatten().map(|m| {
+        let p = m.position();
+        (p.x, p.y)
+    });
+
+    let mut monitors: Vec<MonitorRect> = app
+        .available_monitors()
+        .unwrap_or_else(|_| Vec::new())
+        .into_iter()
+        .map(|m| {
+            let p = m.position();
+            let s = m.size();
+            MonitorRect::new(p.x as f64, p.y as f64, s.width as f64, s.height as f64)
+        })
+        .collect();
+
+    if monitors.is_empty() {
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            if let Ok(Some(m)) = overlay.current_monitor() {
+                let p = m.position();
+                let s = m.size();
+                monitors.push(MonitorRect::new(
+                    p.x as f64,
+                    p.y as f64,
+                    s.width as f64,
+                    s.height as f64,
+                ));
+            }
+        }
+    }
+
+    if let Some((px, py)) = primary_xy {
+        monitors.sort_by_key(|m| {
+            if (m.x as i32) == px && (m.y as i32) == py {
+                0
+            } else {
+                1
+            }
+        });
+    }
+
+    DesktopLayout::from_monitors(monitors)
+}
 
 #[derive(Serialize, Clone)]
 struct FrameSet {
@@ -155,9 +202,19 @@ fn get_frames(state: State<'_, AppState>) -> HashMap<String, FrameSet> {
 
 #[tauri::command]
 #[allow(clippy::explicit_auto_deref)]
-fn pet_drag(stage: &str, x: f64, y: f64, drag_ox: f64, drag_oy: f64, state: State<'_, AppState>) {
+fn pet_drag(
+    stage: &str,
+    x: f64,
+    y: f64,
+    drag_ox: f64,
+    drag_oy: f64,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) {
+    let layout = desktop_layout_from_app(&app);
     let mut rt = state.runtime.lock().unwrap();
     let rt: &mut PetRuntime = &mut *rt;
+    rt.pet.set_layout(layout);
     let now = now_secs();
     match stage {
         "press" => {
@@ -315,18 +372,13 @@ fn apply_config(
                     &serde_json::json!({ "fw": fw, "fh": fh }),
                 );
             }
+            let layout = desktop_layout_from_app(&app);
             let mut rt = state.runtime.lock().unwrap();
             let rt: &mut PetRuntime = &mut *rt;
             rt.pet.fw = fw;
             rt.pet.fh = fh;
-            rt.pet.recompute_ground();
-            rt.pet.pos_y = rt.pet.ground_y;
-            rt.pet.pos_x = 80.0;
-            rt.pet.phase = crate::pet::Phase::Pause;
-            rt.pet.pause_until = now_secs() + 2.0;
-            rt.pet.state = crate::pet::PetState::Idle;
-            rt.pet.anim_idx = 0;
-            rt.pet.anim_last = now_secs();
+            rt.pet.set_layout(layout);
+            rt.pet.reset_spawn(now_secs());
         }
     }
     {
@@ -422,8 +474,7 @@ pub fn run() {
             ));
 
             let overlay = app.get_webview_window("overlay").expect("overlay window");
-            let monitor = overlay.current_monitor()?.expect("monitor");
-            let (sw, sh) = (monitor.size().width as f64, monitor.size().height as f64);
+            let layout = desktop_layout_from_app(app.handle());
             let (fw, fh) = sprite::get_frame_size(DEFAULT_SCALE as f32);
             let (fw, fh) = (fw as f64, fh as f64);
             overlay
@@ -436,7 +487,7 @@ pub fn run() {
             if config.slug.is_empty() {
                 config = PetConfig::default();
             }
-            let pet = Pet::new(sw, sh, fw, fh, config.run_enabled, now);
+            let pet = Pet::with_layout(layout, fw, fh, config.run_enabled, now);
             let rng = StdPetRng(rand::rngs::StdRng::seed_from_u64(42));
 
             let app_state = AppState {
@@ -457,9 +508,17 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(TICK_MS));
                 let overlay = app_handle.get_webview_window("overlay").expect("overlay");
+                let mut tick_n: u64 = 0;
                 loop {
                     interval.tick().await;
+                    tick_n = tick_n.wrapping_add(1);
                     let now = now_secs();
+                    if tick_n.is_multiple_of(LAYOUT_REFRESH_TICKS) {
+                        let layout = desktop_layout_from_app(&app_handle);
+                        let app_state = app_handle.state::<AppState>();
+                        let mut guard = app_state.runtime.lock().unwrap();
+                        guard.pet.set_layout(layout);
+                    }
                     let event = {
                         let app_state = app_handle.state::<AppState>();
                         let mut guard = app_state.runtime.lock().unwrap();

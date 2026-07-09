@@ -14,6 +14,7 @@ pub const GRAVITY_PX_S2: f64 = 1800.0;
 pub const FEET_DROP_PX: f64 = 4.0;
 pub const TASKBAR_H: f64 = 48.0;
 pub const LOOP_MS_F: f64 = 1100.0;
+pub const ROAM_MARGIN: f64 = 10.0;
 
 pub const IDLE_STATES: [&str; 7] = [
     "idle", "idle", "idle", "idle", "waving", "waiting", "review",
@@ -71,6 +72,107 @@ impl PetState {
     }
 }
 
+/// Physical bounds of one display in the virtual desktop coordinate space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonitorRect {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl MonitorRect {
+    pub fn new(x: f64, y: f64, w: f64, h: f64) -> Self {
+        Self { x, y, w, h }
+    }
+
+    pub fn contains(&self, px: f64, py: f64) -> bool {
+        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    }
+
+    pub fn center(&self) -> (f64, f64) {
+        (self.x + self.w * 0.5, self.y + self.h * 0.5)
+    }
+
+    pub fn ground_y(&self, fh: f64) -> f64 {
+        self.y + self.h - TASKBAR_H - fh + FEET_DROP_PX
+    }
+
+    pub fn roam_x_bounds(&self, fw: f64) -> (f64, f64) {
+        let lb = self.x + ROAM_MARGIN;
+        let rb = (self.x + self.w - fw - ROAM_MARGIN).max(lb);
+        (lb, rb)
+    }
+
+    pub fn clamp_top_left(&self, pos_x: f64, pos_y: f64, fw: f64, fh: f64) -> (f64, f64) {
+        let max_x = (self.x + self.w - fw).max(self.x);
+        let max_y = (self.y + self.h - fh).max(self.y);
+        (pos_x.clamp(self.x, max_x), pos_y.clamp(self.y, max_y))
+    }
+}
+
+/// All connected displays. Coordinates may be negative (monitor left of primary).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesktopLayout {
+    monitors: Vec<MonitorRect>,
+}
+
+impl DesktopLayout {
+    pub fn single(w: f64, h: f64) -> Self {
+        Self {
+            monitors: vec![MonitorRect::new(0.0, 0.0, w, h)],
+        }
+    }
+
+    pub fn from_monitors(monitors: Vec<MonitorRect>) -> Self {
+        if monitors.is_empty() {
+            Self::single(1920.0, 1080.0)
+        } else {
+            Self { monitors }
+        }
+    }
+
+    pub fn monitors(&self) -> &[MonitorRect] {
+        &self.monitors
+    }
+
+    pub fn primary(&self) -> MonitorRect {
+        self.monitors[0]
+    }
+
+    /// Monitor containing the point, or the nearest by center distance.
+    pub fn at_point(&self, px: f64, py: f64) -> MonitorRect {
+        for m in &self.monitors {
+            if m.contains(px, py) {
+                return *m;
+            }
+        }
+        self.nearest(px, py)
+    }
+
+    fn nearest(&self, px: f64, py: f64) -> MonitorRect {
+        let mut best = self.monitors[0];
+        let mut best_d = f64::MAX;
+        for m in &self.monitors {
+            let (cx, cy) = m.center();
+            let d = (cx - px).hypot(cy - py);
+            if d < best_d {
+                best_d = d;
+                best = *m;
+            }
+        }
+        best
+    }
+
+    /// Clamp pet top-left so the window stays on some monitor (nearest if in a gap).
+    pub fn clamp_pet(&self, pos_x: f64, pos_y: f64, fw: f64, fh: f64) -> (f64, f64) {
+        let cx = pos_x + fw * 0.5;
+        let cy = pos_y + fh * 0.5;
+        let mon = self.at_point(cx, cy);
+        mon.clamp_top_left(pos_x, pos_y, fw, fh)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PetSnapshot {
     pub pos_x: f64,
@@ -81,8 +183,7 @@ pub struct PetSnapshot {
 }
 
 pub struct Pet {
-    pub sw: f64,
-    pub sh: f64,
+    pub layout: DesktopLayout,
     pub fw: f64,
     pub fh: f64,
     pub pos_x: f64,
@@ -104,20 +205,31 @@ pub struct Pet {
 }
 
 impl Pet {
+    /// Single-monitor convenience (origin at 0,0). Used by tests and fixtures.
     pub fn new(sw: f64, sh: f64, fw: f64, fh: f64, run_enabled: bool, now: f64) -> Self {
-        let ground_y = sh - TASKBAR_H - fh + FEET_DROP_PX;
+        Self::with_layout(DesktopLayout::single(sw, sh), fw, fh, run_enabled, now)
+    }
+
+    pub fn with_layout(
+        layout: DesktopLayout,
+        fw: f64,
+        fh: f64,
+        run_enabled: bool,
+        now: f64,
+    ) -> Self {
+        let mon = layout.primary();
+        let ground_y = mon.ground_y(fh);
         Pet {
-            sw,
-            sh,
+            layout,
             fw,
             fh,
-            pos_x: 80.0,
+            pos_x: mon.x + 80.0,
             pos_y: ground_y,
             vel_y: 0.0,
             ground_y,
             phase: Phase::Pause,
             pause_until: now + 2.0,
-            walk_target: 80.0,
+            walk_target: mon.x + 80.0,
             walk_speed: 0.0,
             roam_dir: 0,
             state: PetState::Idle,
@@ -130,8 +242,40 @@ impl Pet {
         }
     }
 
+    pub fn set_layout(&mut self, layout: DesktopLayout) {
+        self.layout = layout;
+        if !self.dragging {
+            self.recompute_ground();
+        }
+    }
+
+    /// Reset spawn to the left side of the current (or primary) home monitor.
+    pub fn reset_spawn(&mut self, now: f64) {
+        let mon = self.home_monitor();
+        self.recompute_ground();
+        self.pos_x = mon.x + 80.0;
+        self.pos_y = self.ground_y;
+        self.vel_y = 0.0;
+        self.phase = Phase::Pause;
+        self.pause_until = now + 2.0;
+        self.walk_target = self.pos_x;
+        self.walk_speed = 0.0;
+        self.roam_dir = 0;
+        self.state = PetState::Idle;
+        self.anim_idx = 0;
+        self.anim_last = now;
+        self.dragging = false;
+    }
+
+    fn home_monitor(&self) -> MonitorRect {
+        let cx = self.pos_x + self.fw * 0.5;
+        let cy = self.pos_y + self.fh * 0.5;
+        self.layout.at_point(cx, cy)
+    }
+
     pub fn recompute_ground(&mut self) {
-        self.ground_y = self.sh - TASKBAR_H - self.fh + FEET_DROP_PX;
+        let mon = self.home_monitor();
+        self.ground_y = mon.ground_y(self.fh);
     }
 
     pub fn tick<R: PetRng>(&mut self, now: f64, rng: &mut R) {
@@ -140,7 +284,9 @@ impl Pet {
         if self.run_enabled && !self.dragging {
             self.roam(now, dt, rng);
         }
-        self.recompute_ground();
+        if !self.dragging {
+            self.recompute_ground();
+        }
     }
 
     fn roam<R: PetRng>(&mut self, now: f64, dt: f64, rng: &mut R) {
@@ -171,13 +317,16 @@ impl Pet {
             }
             _ => {}
         }
-        self.pos_x = self.pos_x.max(10.0).min(self.sw - self.fw - 10.0);
+        let mon = self.home_monitor();
+        let (lb, rb) = mon.roam_x_bounds(self.fw);
+        self.pos_x = self.pos_x.clamp(lb, rb);
         if self.phase == Phase::Walk {
             self.state = PetState::RunRight;
             self.mirror = self.roam_dir < 0;
         } else {
             self.state = PetState::Idle;
-            self.mirror = (self.pos_x + self.fw / 2.0) < (self.sw / 2.0);
+            let mid = mon.x + mon.w * 0.5;
+            self.mirror = (self.pos_x + self.fw / 2.0) < mid;
         }
     }
 
@@ -190,9 +339,8 @@ impl Pet {
     }
 
     fn pick_target<R: PetRng>(&mut self, rng: &mut R) -> f64 {
-        let m = 10.0;
-        let lb = m;
-        let rb = (self.sw - self.fw - m).max(m);
+        let mon = self.home_monitor();
+        let (lb, rb) = mon.roam_x_bounds(self.fw);
         let sp = rb - lb;
         if sp <= 4.0 {
             return self.pos_x;
@@ -247,12 +395,22 @@ impl Pet {
         if !self.dragging {
             return;
         }
-        self.pos_x = (x_root - drag_ox).max(0.0).min(self.sw - self.fw);
-        self.pos_y = (y_root - drag_oy).max(0.0).min(self.sh - self.fh);
+        let raw_x = x_root - drag_ox;
+        let raw_y = y_root - drag_oy;
+        let (x, y) = self.layout.clamp_pet(raw_x, raw_y, self.fw, self.fh);
+        self.pos_x = x;
+        self.pos_y = y;
+        self.recompute_ground();
     }
 
     pub fn on_release<R: PetRng>(&mut self, now: f64, rng: &mut R) {
         self.dragging = false;
+        self.recompute_ground();
+        let mon = self.home_monitor();
+        let (x, y) = mon.clamp_top_left(self.pos_x, self.pos_y, self.fw, self.fh);
+        self.pos_x = x;
+        self.pos_y = y;
+        self.recompute_ground();
         if self.pos_y < self.ground_y - 1.0 {
             self.vel_y = 0.0;
         } else {
@@ -339,6 +497,13 @@ mod tests {
         Pet::new(1920.0, 1080.0, 134.0, 146.0, true, now)
     }
 
+    fn dual_layout() -> DesktopLayout {
+        DesktopLayout::from_monitors(vec![
+            MonitorRect::new(0.0, 0.0, 2560.0, 1440.0),
+            MonitorRect::new(2560.0, 180.0, 1920.0, 1080.0),
+        ])
+    }
+
     #[test]
     fn initial_state() {
         let p = make_pet(0.0);
@@ -368,12 +533,13 @@ mod tests {
     fn bounds_respected_over_long_run() {
         let mut p = make_pet(0.0);
         let mut rng = StdPetRng(rand::rngs::StdRng::seed_from_u64(42));
+        let mon = p.layout.primary();
         for i in 1..(60 * 30) {
             let now = (i as f64) * 0.016;
             p.tick(now, &mut rng);
-            assert!(p.pos_x >= 0.0, "pos_x below 0 at tick {i}");
-            assert!(p.pos_x <= p.sw, "pos_x beyond sw at tick {i}");
-            assert!(p.pos_y >= 0.0, "pos_y below 0 at tick {i}");
+            assert!(p.pos_x >= mon.x, "pos_x below origin at tick {i}");
+            assert!(p.pos_x <= mon.x + mon.w, "pos_x beyond monitor at tick {i}");
+            assert!(p.pos_y >= mon.y, "pos_y below origin at tick {i}");
             assert!(
                 p.pos_y <= p.ground_y + 1.0,
                 "pos_y above ground at tick {i}"
@@ -481,5 +647,95 @@ mod tests {
         assert!((anim_speed("jump") - 0.8).abs() < 1e-9);
         assert!((anim_speed("run_right") - 1.0).abs() < 1e-9);
         assert!((anim_speed("unknown") - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn layout_at_point_picks_containing_monitor() {
+        let layout = dual_layout();
+        let m0 = layout.at_point(100.0, 100.0);
+        assert!((m0.x - 0.0).abs() < 1e-9);
+        let m1 = layout.at_point(3000.0, 500.0);
+        assert!((m1.x - 2560.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn layout_at_point_nearest_when_outside() {
+        let layout = dual_layout();
+        // Far left of primary
+        let m = layout.at_point(-500.0, 700.0);
+        assert!((m.x - 0.0).abs() < 1e-9);
+        // Far right of secondary
+        let m = layout.at_point(5000.0, 700.0);
+        assert!((m.x - 2560.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn drag_onto_secondary_monitor() {
+        let mut p = Pet::with_layout(dual_layout(), 134.0, 146.0, true, 0.0);
+        p.on_press(100.0, 100.0);
+        // Drop near center of secondary (2560+960, 180+540)
+        p.on_drag(2560.0 + 900.0, 180.0 + 400.0, 0.0, 0.0);
+        assert!(p.pos_x >= 2560.0, "expected secondary x, got {}", p.pos_x);
+        let mon = p.home_monitor();
+        assert!((mon.x - 2560.0).abs() < 1e-9);
+        let expected_ground = mon.ground_y(p.fh);
+        assert!((p.ground_y - expected_ground).abs() < 1e-9);
+    }
+
+    #[test]
+    fn release_on_secondary_uses_secondary_ground() {
+        let mut p = Pet::with_layout(dual_layout(), 134.0, 146.0, true, 0.0);
+        let mut rng = StdPetRng(rand::rngs::StdRng::seed_from_u64(42));
+        let secondary = p.layout.monitors()[1];
+        let ground = secondary.ground_y(p.fh);
+        p.on_press(0.0, 0.0);
+        p.on_drag(secondary.x + 200.0, ground, 0.0, 0.0);
+        p.on_release(5.0, &mut rng);
+        assert!(!p.dragging);
+        assert!((p.pos_y - ground).abs() < 1e-9);
+        assert_eq!(p.phase, Phase::Pause);
+        // Roam must stay on secondary
+        for i in 1..(60 * 15) {
+            p.tick(5.0 + i as f64 * 0.016, &mut rng);
+            assert!(
+                p.pos_x >= secondary.x - 1.0,
+                "walked off secondary: {}",
+                p.pos_x
+            );
+            assert!(
+                p.pos_x + p.fw <= secondary.x + secondary.w + 1.0,
+                "walked past secondary edge: {}",
+                p.pos_x
+            );
+        }
+    }
+
+    #[test]
+    fn negative_origin_monitor() {
+        let layout = DesktopLayout::from_monitors(vec![
+            MonitorRect::new(-1920.0, 0.0, 1920.0, 1080.0),
+            MonitorRect::new(0.0, 0.0, 2560.0, 1440.0),
+        ]);
+        let mut p = Pet::with_layout(layout, 134.0, 146.0, false, 0.0);
+        // primary() is first monitor (left one)
+        assert!((p.pos_x - (-1920.0 + 80.0)).abs() < 1e-9);
+        p.on_press(0.0, 0.0);
+        p.on_drag(-500.0, 500.0, 0.0, 0.0);
+        assert!(
+            p.pos_x < 0.0,
+            "should stay on left monitor, got {}",
+            p.pos_x
+        );
+    }
+
+    #[test]
+    fn set_layout_refreshes_ground() {
+        let mut p = make_pet(0.0);
+        let old_ground = p.ground_y;
+        p.set_layout(dual_layout());
+        // Still on primary (0,0 2560x1440) — taller ground
+        let expected = 1440.0 - 48.0 - 146.0 + 4.0;
+        assert!((p.ground_y - expected).abs() < 1e-9);
+        assert!((p.ground_y - old_ground).abs() > 1.0);
     }
 }
