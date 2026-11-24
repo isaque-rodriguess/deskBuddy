@@ -80,14 +80,23 @@
     });
   });
 
+  function getScreenCoords(e: PointerEvent) {
+    const dpr = window.devicePixelRatio || 1;
+    return {
+      x: e.screenX * dpr,
+      y: e.screenY * dpr,
+    };
+  }
+
   function onPointerDown(e: PointerEvent) {
     e.preventDefault();
-    dragOx = e.screenX - lastPos.x;
-    dragOy = e.screenY - lastPos.y;
+    const { x, y } = getScreenCoords(e);
+    dragOx = x - lastPos.x;
+    dragOy = y - lastPos.y;
     invoke("pet_drag", {
       stage: "press",
-      x: e.screenX,
-      y: e.screenY,
+      x,
+      y,
       dragOx,
       dragOy,
     });
@@ -95,23 +104,30 @@
 
   function onPointerMove(e: PointerEvent) {
     if (!(e.buttons & 1)) return;
+    const { x, y } = getScreenCoords(e);
     invoke("pet_drag", {
       stage: "drag",
-      x: e.screenX,
-      y: e.screenY,
+      x,
+      y,
       dragOx,
       dragOy,
     });
   }
 
   function onPointerUp(e: PointerEvent) {
+    const { x, y } = getScreenCoords(e);
     invoke("pet_drag", {
       stage: "release",
-      x: e.screenX,
-      y: e.screenY,
+      x,
+      y,
       dragOx,
       dragOy,
     });
+  }
+
+  function onContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    invoke("show_settings");
   }
 </script>
 
@@ -121,6 +137,7 @@
   onpointerdown={onPointerDown}
   onpointermove={onPointerMove}
   onpointerup={onPointerUp}
+  oncontextmenu={onContextMenu}
   style="touch-action: none"
 ></canvas>
 

@@ -156,9 +156,25 @@ struct PetInfo {
 }
 
 fn hermes_pets_dir() -> PathBuf {
-    std::env::var("LOCALAPPDATA")
-        .map(|p| PathBuf::from(p).join("hermes").join("pets"))
-        .unwrap_or_else(|_| PathBuf::from(".").join("hermes").join("pets"))
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p).join("hermes").join("pets"))
+            .unwrap_or_else(|_| PathBuf::from(".").join("hermes").join("pets"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let base = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .ok()
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
+        base.join("hermes").join("pets")
+    }
 }
 
 fn find_spritesheet(
@@ -177,6 +193,7 @@ fn find_spritesheet(
             .join("resources")
             .join(slug)
             .join("spritesheet.webp"),
+        resource_dir.join(slug).join("spritesheet.webp"),
     ];
     candidates.into_iter().find(|p| p.exists())
 }
@@ -381,6 +398,13 @@ fn apply_config(
             rt.pet.reset_spawn(now_secs());
         }
     }
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        if enabled {
+            let _ = overlay.show();
+        } else {
+            let _ = overlay.hide();
+        }
+    }
     {
         let mut rt = state.runtime.lock().unwrap();
         let rt: &mut PetRuntime = &mut *rt;
@@ -462,7 +486,10 @@ pub fn run() {
                     }
                 })?;
 
-            let resource_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let resource_dir = app
+                .path()
+                .resource_dir()
+                .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")));
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir).ok();
             let hermes_dir = hermes_pets_dir();
@@ -487,6 +514,9 @@ pub fn run() {
             if config.slug.is_empty() {
                 config = PetConfig::default();
             }
+            if !config.enabled {
+                let _ = overlay.hide();
+            }
             let pet = Pet::with_layout(layout, fw, fh, config.run_enabled, now);
             let rng = StdPetRng(rand::rngs::StdRng::seed_from_u64(42));
 
@@ -509,6 +539,7 @@ pub fn run() {
                 let mut interval = tokio::time::interval(Duration::from_millis(TICK_MS));
                 let overlay = app_handle.get_webview_window("overlay").expect("overlay");
                 let mut tick_n: u64 = 0;
+                let mut last_pos: Option<(i32, i32)> = None;
                 loop {
                     interval.tick().await;
                     tick_n = tick_n.wrapping_add(1);
@@ -540,10 +571,11 @@ pub fn run() {
                             pos_y,
                         }
                     };
-                    let _ = overlay.set_position(PhysicalPosition::new(
-                        event.pos_x as i32,
-                        event.pos_y as i32,
-                    ));
+                    let target_pos = (event.pos_x.round() as i32, event.pos_y.round() as i32);
+                    if last_pos != Some(target_pos) {
+                        let _ = overlay.set_position(PhysicalPosition::new(target_pos.0, target_pos.1));
+                        last_pos = Some(target_pos);
+                    }
                     let _ = overlay.emit("pet-frame", &event);
                 }
             });
@@ -551,17 +583,19 @@ pub fn run() {
             // Tray
             let show_i = MenuItem::with_id(app, "show", "Settings", true, None::<&str>)?;
             let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-            let autostart_i = MenuItem::with_id(
-                app,
-                "autostart",
+            let autostart_text = if cfg!(target_os = "windows") {
                 if autostart_enabled {
                     "✓ Start with Windows"
                 } else {
                     "Start with Windows"
-                },
-                true,
-                None::<&str>,
-            )?;
+                }
+            } else if autostart_enabled {
+                "✓ Start on Boot"
+            } else {
+                "Start on Boot"
+            };
+            let autostart_i =
+                MenuItem::with_id(app, "autostart", autostart_text, true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &autostart_i, &quit_i])?;
 
@@ -571,10 +605,15 @@ pub fn run() {
                 *state.autostart_item.lock().unwrap() = Some(autostart_i);
             }
 
-            let _tray = TrayIconBuilder::with_id("main")
+            let mut tray_builder = TrayIconBuilder::with_id("main")
                 .menu(&menu)
-                .tooltip("Desktop Pet")
-                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Desktop Pet");
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            let _tray = tray_builder
                 .on_menu_event(|app, e| match e.id.as_ref() {
                     "show" => {
                         if let Some(w) = app.get_webview_window("settings") {
@@ -593,11 +632,18 @@ pub fn run() {
                         let state = app.state::<AppState>();
                         let guard = state.autostart_item.lock().unwrap();
                         if let Some(item) = guard.as_ref() {
-                            let _ = item.set_text(if new_state {
-                                "✓ Start with Windows"
+                            let text = if cfg!(target_os = "windows") {
+                                if new_state {
+                                    "✓ Start with Windows"
+                                } else {
+                                    "Start with Windows"
+                                }
+                            } else if new_state {
+                                "✓ Start on Boot"
                             } else {
-                                "Start with Windows"
-                            });
+                                "Start on Boot"
+                            };
+                            let _ = item.set_text(text);
                         }
                     }
                     "quit" => app.exit(0),
