@@ -357,12 +357,6 @@
 {/if}
 
 <style>
-  :global(html, body) {
-    margin: 0;
-    padding: 0;
-    background: #0d0d0d;
-    overflow: hidden;
-  }
   main {
     user-select: none;
   }

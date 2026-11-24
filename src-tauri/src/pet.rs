@@ -1,5 +1,3 @@
-use std::f64;
-
 pub const STRIDE_PER_LOOP: f64 = 0.8;
 pub const REST_CHANCE: f64 = 0.62;
 pub const PAUSE_MIN: f64 = 1.5;
