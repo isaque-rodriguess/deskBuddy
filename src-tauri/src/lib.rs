@@ -573,7 +573,8 @@ pub fn run() {
                     };
                     let target_pos = (event.pos_x.round() as i32, event.pos_y.round() as i32);
                     if last_pos != Some(target_pos) {
-                        let _ = overlay.set_position(PhysicalPosition::new(target_pos.0, target_pos.1));
+                        let _ =
+                            overlay.set_position(PhysicalPosition::new(target_pos.0, target_pos.1));
                         last_pos = Some(target_pos);
                     }
                     let _ = overlay.emit("pet-frame", &event);
